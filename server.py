@@ -8,14 +8,19 @@ clients = {}
 admins = {}
 
 
+async def safe_send(ws, text: str):
+    try:
+        await ws.send(text)
+        return True
+    except Exception:
+        return False
+
+
 async def broadcast_admins(msg: dict):
     data = json.dumps(msg)
     for group in list(admins.values()):
         for ws in list(group):
-            try:
-                await ws.send(data)
-            except Exception:
-                pass
+            await safe_send(ws, data)
 
 
 async def handler(ws):
@@ -34,16 +39,16 @@ async def handler(ws):
                 role = "client"
                 device_id = msg.get("deviceId", "unknown")
                 clients[device_id] = ws
-                print(f"[+] client online: {device_id}")
+                print(f"[+] client online: {device_id}", flush=True)
                 await broadcast_admins({"type": "client_online", "deviceId": device_id})
-                await ws.send(json.dumps({"type": "welcome", "deviceId": device_id}))
+                await safe_send(ws, json.dumps({"type": "welcome", "deviceId": device_id}))
 
             elif t == "register_admin":
                 role = "admin"
                 admin_id = msg.get("deviceId", "admin")
                 admins.setdefault(admin_id, set()).add(ws)
-                print(f"[+] admin online: {admin_id}")
-                await ws.send(json.dumps({
+                print(f"[+] admin online: {admin_id}", flush=True)
+                await safe_send(ws, json.dumps({
                     "type": "devices",
                     "devices": [
                         {"id": did, "online": True, "lastSeen": int(time.time() * 1000)}
@@ -75,25 +80,34 @@ async def handler(ws):
                 target = msg.get("deviceId")
                 cmd = msg.get("cmd")
                 payload = msg.get("payload", {})
-                print(f"[cmd] {target} <- {cmd}")
-                if target in clients:
-                    try:
-                        await clients[target].send(json.dumps({
-                            "type": "command",
-                            "cmd": cmd,
-                            "payload": payload,
-                            "ts": int(time.time() * 1000)
-                        }))
-                        await ws.send(json.dumps({"type": "ack", "deviceId": target, "ok": True}))
-                    except Exception as e:
-                        await ws.send(json.dumps({"type": "ack", "deviceId": target, "ok": False, "error": str(e)}))
-                else:
-                    await ws.send(json.dumps({"type": "ack", "deviceId": target, "ok": False, "error": "offline"}))
+                print(f"[cmd] {target} <- {cmd}", flush=True)
 
+                if target in clients:
+                    ok = await safe_send(clients[target], json.dumps({
+                        "type": "command",
+                        "cmd": cmd,
+                        "payload": payload,
+                        "ts": int(time.time() * 1000)
+                    }))
+                    await safe_send(ws, json.dumps({
+                        "type": "ack",
+                        "deviceId": target,
+                        "ok": ok
+                    }))
+                else:
+                    await safe_send(ws, json.dumps({
+                        "type": "ack",
+                        "deviceId": target,
+                        "ok": False,
+                        "error": "offline"
+                    }))
+
+    except Exception as e:
+        print(f"[!] handler error: {e}", flush=True)
     finally:
         if role == "client" and device_id:
             clients.pop(device_id, None)
-            print(f"[-] client offline: {device_id}")
+            print(f"[-] client offline: {device_id}", flush=True)
             await broadcast_admins({"type": "client_offline", "deviceId": device_id})
         elif role == "admin" and admin_id:
             admins.get(admin_id, set()).discard(ws)
@@ -101,8 +115,8 @@ async def handler(ws):
 
 async def main():
     port = int(os.environ.get("PORT", 10000))
-    async with websockets.serve(handler, "0.0.0.0", port):
-        print(f"Server started on :{port}")
+    async with websockets.serve(handler, "0.0.0.0", port, ping_interval=20, ping_timeout=20):
+        print(f"Server started on :{port}", flush=True)
         await asyncio.Future()
 
 
