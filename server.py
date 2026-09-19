@@ -23,6 +23,19 @@ async def broadcast_admins(msg: dict):
             await safe_send(ws, data)
 
 
+async def heartbeat():
+    """Каждые 25 сек шлём пустой пинг во все соединения,
+    чтобы прокси Render не закрывал WebSocket."""
+    while True:
+        await asyncio.sleep(25)
+        ping = json.dumps({"type": "ping", "ts": int(time.time() * 1000)})
+        for ws in list(clients.values()):
+            await safe_send(ws, ping)
+        for group in list(admins.values()):
+            for ws in list(group):
+                await safe_send(ws, ping)
+
+
 async def handler(ws):
     role = None
     device_id = None
@@ -34,6 +47,10 @@ async def handler(ws):
             except Exception:
                 continue
             t = msg.get("type")
+
+            if t == "ping":
+                await safe_send(ws, json.dumps({"type": "pong"}))
+                continue
 
             if t == "register_client":
                 role = "client"
@@ -115,7 +132,8 @@ async def handler(ws):
 
 async def main():
     port = int(os.environ.get("PORT", 10000))
-    async with websockets.serve(handler, "0.0.0.0", port, ping_interval=20, ping_timeout=20):
+    asyncio.create_task(heartbeat())
+    async with websockets.serve(handler, "0.0.0.0", port, ping_interval=None):
         print(f"Server started on :{port}", flush=True)
         await asyncio.Future()
 
