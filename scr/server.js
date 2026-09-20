@@ -40,7 +40,7 @@ wss.on('connection', (ws) => {
             sendDevicesList(ws);
             return;
         }
-        if (t === 'ping') { safeSend(ws, { type: 'pong' }); return; }
+        if (t === 'ping' || t === 'pong' || t === 'admin_ping') return;
         if (t === 'status' && role === 'client') {
             const c = clients.get(clientId);
             if (c) {
@@ -53,6 +53,10 @@ wss.on('connection', (ws) => {
             broadcastAdmins({ type: 'status', deviceId: clientId,
                 name: c ? c.name : '', network: c ? c.network : '',
                 battery: c ? c.battery : 0, android: c ? c.android : '', online: true });
+            return;
+        }
+        if (t === 'volume' && role === 'client') {
+            broadcastAdmins({ type: 'volume', deviceId: clientId, value: msg.value || 0 });
             return;
         }
         if (t === 'log' && role === 'client') {
@@ -81,10 +85,27 @@ wss.on('connection', (ws) => {
     });
 });
 
+// Heartbeat — держит Render живым
 setInterval(() => {
-    const ping = JSON.stringify({ type: 'heartbeat', ts: Date.now() });
-    for (const [, c] of clients) safeSend(c.ws, ping);
+    const now = Date.now();
+    const ping = JSON.stringify({ type: 'server_ping', ts: now });
+
+    // Чистим мёртвых клиентов
+    const dead = [];
+    for (const [id, c] of clients) {
+        if (!c.ws || c.ws.readyState !== 1) {
+            dead.push(id);
+            continue;
+        }
+        safeSend(c.ws, ping);
+    }
+    dead.forEach(id => {
+        clients.delete(id);
+        console.log('[-] client offline (dead): ' + id);
+        broadcastAdmins({ type: 'client_offline', deviceId: id });
+    });
+
     for (const a of admins) safeSend(a, ping);
-}, 5000);
+}, 10000);
 
 server.listen(PORT, () => console.log('Server on port ' + PORT));
